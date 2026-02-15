@@ -1,4 +1,4 @@
-# evilSDR (Rebuild)
+# evilSDR
 
 ## Overview
 A lightweight, performant SDR receiver focused on stability and audio quality.
@@ -14,8 +14,8 @@ This is a ground-up rewrite to address previous performance issues (audio skippi
 
 ## Roadmap
 - **Phase 1 (MVP)**: Stable RTL-TCP connection, minimal DSP, basic waterfall/spectrum visualization (no skipping).
-- **Phase 2**: Audio demodulation (WBFM/NBFM).
-- **Phase 3**: Advanced features (scanning, plugins).
+- **Phase 2**: Audio demodulation (WBFM/NBFM) & Recording (Audio/IQ).
+- **Phase 3**: Advanced decoders (ADSB, TV/ATV), scanning, and plugin architecture.
 
 ## Getting Started
 1. Install dependencies: `pip install -r requirements.txt`
