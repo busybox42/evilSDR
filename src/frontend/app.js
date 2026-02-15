@@ -197,12 +197,18 @@ function handleJSON(msg) {
       if (msg.freq) updateFreq(msg.freq);
       if (msg.mode) setModeUI(msg.mode);
       if (msg.sample_rate) currentSampleRate = msg.sample_rate;
+      if (msg.rtl_host) document.getElementById('conn-host').value = msg.rtl_host;
+      if (msg.rtl_port) document.getElementById('conn-port').value = msg.rtl_port;
       if (msg.streaming !== undefined) setStreamingUI(msg.streaming);
       if (msg.iq_recording !== undefined) { iqRecording = msg.iq_recording; updateRecordUI(); }
       if (msg.audio_recording !== undefined) { audioRecording = msg.audio_recording; updateRecordUI(); }
       break;
     case 'FREQ_CHANGED': updateFreq(msg.value); break;
     case 'MODE_CHANGED': setModeUI(msg.mode); break;
+    case 'CONNECTION_CHANGED':
+      if (msg.host) document.getElementById('conn-host').value = msg.host;
+      if (msg.port) document.getElementById('conn-port').value = msg.port;
+      break;
     case 'SIGNAL_LEVEL':
       const pct = Math.max(0, Math.min(100, ((msg.db + 90) / 90) * 100));
       document.getElementById('s-meter-bar').style.width = pct + '%';

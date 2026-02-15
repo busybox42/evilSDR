@@ -208,6 +208,8 @@ class SDRServer:
             "streaming": self.streaming,
             "freq": self.rtl.center_freq,
             "sample_rate": self.rtl.sample_rate,
+            "rtl_host": self.rtl.host,
+            "rtl_port": self.rtl.port,
             "fft_size": FFT_SIZE,
             "iq_recording": self.iq_recording,
             "audio_recording": self.audio_recording,
