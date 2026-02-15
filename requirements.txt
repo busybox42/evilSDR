@@ -1,0 +1,4 @@
+numpy
+scipy
+websockets>=13.0
+aiohttp
