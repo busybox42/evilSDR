@@ -28,14 +28,37 @@ from decoders.pocsag import POCSAGDecoder
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(message)s")
 logger = logging.getLogger("evilSDR")
 
-WS_HOST = "0.0.0.0"
-WS_PORT = 8765
-HTTP_PORT = 5555
-RTL_HOST = "127.0.0.1"
-RTL_PORT = 1234
-SAMPLE_RATE = 2_400_000
-FFT_SIZE = 2048
-DEFAULT_FREQ = 88_700_000
+CONFIG_FILE = Path(__file__).parent / "config.json"
+
+def load_config():
+    defaults = {
+        "ws_host": "0.0.0.0",
+        "ws_port": 8765,
+        "http_port": 5555,
+        "rtl_host": "127.0.0.1",
+        "rtl_port": 1234,
+        "sample_rate": 2_400_000,
+        "fft_size": 2048,
+        "default_freq": 88_700_000
+    }
+    if CONFIG_FILE.exists():
+        try:
+            user_config = json.loads(CONFIG_FILE.read_text())
+            defaults.update(user_config)
+        except Exception as e:
+            logger.error(f"Failed to load config: {e}")
+    return defaults
+
+config = load_config()
+
+WS_HOST = config["ws_host"]
+WS_PORT = config["ws_port"]
+HTTP_PORT = config["http_port"]
+RTL_HOST = config["rtl_host"]
+RTL_PORT = config["rtl_port"]
+SAMPLE_RATE = config["sample_rate"]
+FFT_SIZE = config["fft_size"]
+DEFAULT_FREQ = config["default_freq"]
 READ_SIZE = 131072
 
 FRONTEND_DIR = Path(__file__).parent.parent / "frontend"

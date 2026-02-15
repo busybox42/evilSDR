@@ -1,0 +1,10 @@
+{
+    "ws_host": "0.0.0.0",
+    "ws_port": 8765,
+    "http_port": 5555,
+    "rtl_host": "127.0.0.1",
+    "rtl_port": 1234,
+    "sample_rate": 2400000,
+    "fft_size": 2048,
+    "default_freq": 88700000
+}
