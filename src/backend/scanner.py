@@ -38,9 +38,8 @@ class Scanner:
         self.scan_task = None
 
         # Scan parameters
-        self.dwell_time = 0.10        # seconds to wait after tuning before measuring
+        self.dwell_time = 0.25        # seconds to wait after tuning before measuring
         self.resume_delay = 2.0       # seconds to wait after signal drops before resuming
-        self.squelch_threshold = -60.0 # dB threshold for signal detection
 
         # Bookmark scan state
         self.bookmark_freqs = []      # list of {freq, mode, label}
@@ -71,18 +70,14 @@ class Scanner:
         return self.state != ScanState.IDLE
 
     def set_speed(self, dwell_ms: int):
-        """Set dwell time in milliseconds (50-500)."""
-        self.dwell_time = max(0.05, min(0.5, dwell_ms / 1000.0))
+        """Set dwell time in milliseconds (100-2000)."""
+        self.dwell_time = max(0.1, min(2.0, dwell_ms / 1000.0))
         logger.info(f"Scanner dwell time: {self.dwell_time*1000:.0f}ms")
 
     def set_resume_delay(self, delay_s: float):
         """Set resume delay in seconds."""
         self.resume_delay = max(0.5, min(10.0, delay_s))
         logger.info(f"Scanner resume delay: {self.resume_delay:.1f}s")
-
-    def set_squelch(self, threshold_db: float):
-        """Update squelch threshold used by scanner."""
-        self.squelch_threshold = threshold_db
 
     def load_bookmark_freqs(self, category_name=None):
         """Load bookmark frequencies from file into scan list, optionally filtered by category."""
@@ -219,7 +214,7 @@ class Scanner:
 
                     # Check signal
                     signal_db = self.dsp.get_signal_level()
-                    if signal_db > self.squelch_threshold:
+                    if signal_db > self.dsp.squelch_threshold:
                         # Signal found -> MONITORING
                         freq = self._get_current_freq()
                         label = self._get_current_label()
@@ -238,7 +233,7 @@ class Scanner:
 
                 elif self.state == ScanState.MONITORING:
                     signal_db = self.dsp.get_signal_level()
-                    if signal_db < self.squelch_threshold:
+                    if signal_db < self.dsp.squelch_threshold:
                         # Signal dropped -> HOLD
                         logger.info(f"Scanner hold ({self.resume_delay:.1f}s)")
                         self._transition(ScanState.HOLD)
@@ -246,7 +241,7 @@ class Scanner:
 
                 elif self.state == ScanState.HOLD:
                     signal_db = self.dsp.get_signal_level()
-                    if signal_db > self.squelch_threshold:
+                    if signal_db > self.dsp.squelch_threshold:
                         # Signal returned -> back to MONITORING
                         self._transition(ScanState.MONITORING)
                         await self._notify_status()

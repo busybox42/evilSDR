@@ -99,6 +99,12 @@ class SDRServer:
         self.audio_wav_filename = None
 
     async def _on_scanner_freq_change(self, freq):
+        # Flush raw queue to reduce tuning latency/stale signal levels
+        while not self._raw_queue.empty():
+            try:
+                self._raw_queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
         self._broadcast(json.dumps({"type": "FREQ_CHANGED", "value": freq}))
 
     async def _on_scanner_mode_change(self, mode):
