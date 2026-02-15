@@ -23,6 +23,15 @@ let autoScale = true;
 let manualMinDb = -80;
 let manualMaxDb = -20;
 
+const PALETTES = {
+  classic: [[0,0,0], [0,255,255], [255,0,255], [255,255,255]], 
+  magma: [[0,0,4], [81,18,124], [183,55,121], [252,137,97], [251,252,191]],
+  viridis: [[68,1,84], [59,81,139], [33,145,140], [94,201,98], [253,231,37]],
+  inferno: [[0,0,4], [87,15,109], [187,55,84], [249,142,9], [252,255,164]],
+  plasma: [[13,8,135], [126,3,168], [204,71,120], [248,149,64], [240,249,33]]
+};
+let currentPalette = 'classic';
+
 let lastWaterfallDraw = 0;
 const WATERFALL_FPS = 25;
 const WATERFALL_FPS_STREAMING = 15;
@@ -133,6 +142,11 @@ function wireControls() {
   document.getElementById('chk-pocsag').onchange = (e) => {
     sendJSON({ type: 'TOGGLE_POCSAG', value: e.target.checked });
     document.getElementById('decoder-log').style.display = e.target.checked ? 'block' : 'none';
+  };
+
+  const themeSel = document.getElementById('waterfall-theme');
+  if (themeSel) themeSel.onchange = (e) => {
+    currentPalette = e.target.value;
   };
 
   // Mouse wheel tuning over spectrum
@@ -301,12 +315,23 @@ function drawWaterfall(data) {
   const w = watCanvas.width;
   watCtx.drawImage(watCanvas, 0, 1);
   const img = watCtx.createImageData(w, 1);
+  
+  const palette = PALETTES[currentPalette] || PALETTES.classic;
+
   for (let px = 0; px < w; px++) {
-    const val = data[Math.floor((px / w) * data.length)] * vizGain + vizOffset;
+    const val = Math.max(0, Math.min(0.999, data[Math.floor((px / w) * data.length)] * vizGain + vizOffset));
     const idx = px * 4;
-    img.data[idx] = val * 255;
-    img.data[idx+1] = (1-val) * 255;
-    img.data[idx+2] = 255;
+    
+    // Multi-stop interpolation
+    const scaledVal = val * (palette.length - 1);
+    const i = Math.floor(scaledVal);
+    const f = scaledVal - i;
+    const c1 = palette[i];
+    const c2 = palette[i + 1];
+
+    img.data[idx]   = c1[0] + (c2[0] - c1[0]) * f;
+    img.data[idx+1] = c1[1] + (c2[1] - c1[1]) * f;
+    img.data[idx+2] = c1[2] + (c2[2] - c1[2]) * f;
     img.data[idx+3] = 255;
   }
   watCtx.putImageData(img, 0, 0);
@@ -319,6 +344,15 @@ async function initAudio() {
     await audioCtx.audioWorklet.addModule('./audio-processor.js?v=' + Date.now());
     audioWorklet = new AudioWorkletNode(audioCtx, 'sdr-audio-processor', { outputChannelCount: [1] });
     gainNode = audioCtx.createGain();
+    
+    // Set initial volume from slider
+    const volSlider = document.getElementById('volume-slider');
+    if (volSlider) {
+      gainNode.gain.value = Math.pow(volSlider.value / 100, 2);
+    } else {
+      gainNode.gain.value = 0.25; // 50% default
+    }
+
     audioWorklet.connect(gainNode);
     gainNode.connect(audioCtx.destination);
     audioInitialized = true;
