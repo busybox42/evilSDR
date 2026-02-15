@@ -229,6 +229,13 @@ class SDRServer:
                 await self.rtl.set_agc(1 if msg.get("value") else 0)
             elif t == "START_SCAN":
                 await self.scanner.start(category_name=msg.get("category"))
+            elif t == "START_RANGE_SCAN":
+                await self.scanner.start_range(
+                    start_freq=int(msg.get("start", 88000000)),
+                    end_freq=int(msg.get("end", 108000000)),
+                    step=int(msg.get("step", 100000)),
+                    mode=msg.get("mode", self.dsp.mode),
+                )
             elif t == "STOP_SCAN":
                 await self.scanner.stop()
             elif t == "SKIP_SCAN":

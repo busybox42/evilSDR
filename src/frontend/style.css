@@ -153,7 +153,7 @@ body {
 
 /* ── Control panel (right sidebar) ──────────────────────────────── */
 .control-panel {
-  width: 280px;
+  width: 320px;
   flex-shrink: 0;
   background: var(--bg-panel);
   border-left: 1px solid var(--border);
@@ -281,6 +281,30 @@ input[type="checkbox"] { accent-color: var(--accent); }
   font-size: 10px; color: var(--accent-red); padding: 4px 0;
   font-family: var(--font-mono);
 }
+
+/* ── Range Scan Box ────────────────────────────────────────────── */
+.range-scan-box {
+  background: rgba(0, 0, 0, 0.2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 8px;
+  margin: 8px 0;
+}
+.range-scan-box .control-row { margin-bottom: 6px; gap: 4px; }
+.range-scan-box input[type="number"] {
+  background: var(--bg-input); border: 1px solid var(--border);
+  color: var(--accent-cyan); padding: 4px; font-size: 11px;
+  width: 100%; min-width: 0;
+}
+.range-scan-box select {
+  background: var(--bg-input); border: 1px solid var(--border);
+  color: var(--text-primary); padding: 3px; font-size: 11px;
+  width: 60px;
+}
+.range-scan-box .sep { color: var(--text-dim); }
+.range-scan-box .unit { font-size: 10px; color: var(--text-dim); width: 25px; }
+.range-scan-box label { width: 40px; }
+.btn-full { width: 100%; margin-top: 4px; }
 
 /* ── Scrollbar styling ──────────────────────────────────────────── */
 ::-webkit-scrollbar { width: 6px; }

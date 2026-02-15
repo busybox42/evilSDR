@@ -138,7 +138,15 @@ function wireControls() {
   };
 
   document.getElementById('btn-scan').onclick = toggleScan;
+  document.getElementById('btn-range-scan').onclick = startRangeScan;
   document.getElementById('btn-skip').onclick = () => sendJSON({ type: 'SKIP_SCAN' });
+  
+  document.getElementById('btn-start').onclick = toggleStream;
+  document.getElementById('btn-set-freq').onclick = setFreq;
+
+  document.getElementById('btn-rec-audio').onclick = toggleRecordAudio;
+  document.getElementById('btn-rec-iq').onclick = toggleRecordIQ;
+  
   document.getElementById('chk-pocsag').onchange = (e) => {
     sendJSON({ type: 'TOGGLE_POCSAG', value: e.target.checked });
     document.getElementById('decoder-log').style.display = e.target.checked ? 'block' : 'none';
@@ -544,18 +552,41 @@ function toggleScan() {
     if (cat) msg.category = cat;
     sendJSON(msg);
   }
-  // Don't toggle here — let SCAN_STATUS drive the UI state
+}
+
+function startRangeScan() {
+  if (isScanning) {
+    sendJSON({ type: 'STOP_SCAN' });
+    return;
+  }
+  const startEl = document.getElementById('range-start');
+  const endEl = document.getElementById('range-end');
+  const stepEl = document.getElementById('range-step');
+  const modeEl = document.getElementById('range-mode');
+  if (!startEl || !endEl || !stepEl) return;
+  const startFreq = Math.round(parseFloat(startEl.value) * 1e6);
+  const endFreq = Math.round(parseFloat(endEl.value) * 1e6);
+  const step = Math.round(parseFloat(stepEl.value) * 1e3);
+  const mode = modeEl ? modeEl.value : currentMode;
+  if (isNaN(startFreq) || isNaN(endFreq) || isNaN(step) || step <= 0 || endFreq <= startFreq) {
+    alert('Invalid range parameters');
+    return;
+  }
+  sendJSON({ type: 'START_RANGE_SCAN', start: startFreq, end: endFreq, step: step, mode: mode });
 }
 
 function updateScanStatus(msg) {
   const btn = document.getElementById('btn-scan');
+  const btnRange = document.getElementById('btn-range-scan');
   const info = document.getElementById('scan-info');
   isScanning = msg.state !== 'IDLE';
   if (btn) btn.textContent = isScanning ? 'STOP SCAN' : 'START SCAN';
+  if (btnRange) btnRange.textContent = isScanning ? 'STOP' : 'RANGE SCAN';
   if (info) {
     if (isScanning) {
       info.style.display = 'block';
-      info.textContent = `[${msg.state}] ${msg.label || '---'} (${msg.index + 1}/${msg.total}) skip:${msg.skipped}`;
+      const modeTag = msg.scan_mode === 'RANGE' ? 'RNG' : 'BKM';
+      info.textContent = `[${modeTag}:${msg.state}] ${msg.label || '---'} (${msg.index + 1}/${msg.total}) skip:${msg.skipped}`;
     } else {
       info.style.display = 'none';
     }
