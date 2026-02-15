@@ -23,7 +23,7 @@ except ImportError:
 from dsp import RadioDSP
 from rtl_client import RTLTCPClient
 from scanner import Scanner
-from decoders.pocsag import POCSAGDecoder
+from decoders import load_decoders
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(message)s")
 logger = logging.getLogger("evilSDR")
@@ -79,13 +79,19 @@ class SDRServer:
         self._raw_queue = asyncio.Queue(maxsize=20)
         self.bookmarks = self._load_bookmarks()
 
-        # Scanner & Decoder
+        # Scanner & Decoders (plugin architecture)
         self.scanner = Scanner(self.rtl, self.dsp, bookmarks_file=BOOKMARKS_FILE)
         self.scanner._on_freq_change = self._on_scanner_freq_change
         self.scanner._on_mode_change = self._on_scanner_mode_change
         self.scanner._on_status_change = self._broadcast_scan_status
-        self.pocsag = POCSAGDecoder()
-        self.pocsag.set_callback(self._broadcast_pocsag)
+
+        self.decoders = load_decoders(sample_rate=48000)
+        for dec in self.decoders.values():
+            dec.add_callback(self._broadcast_decoder_message)
+        logger.info(f"Loaded {len(self.decoders)} decoder(s): {list(self.decoders.keys())}")
+
+        # Legacy convenience alias
+        self.pocsag = self.decoders.get("pocsag")
         self.decode_pocsag = False
 
         # IQ Recording (toggle)
@@ -114,7 +120,13 @@ class SDRServer:
         self._broadcast(json.dumps(status))
 
     def _broadcast_pocsag(self, message):
-        self._broadcast(json.dumps({"type": "POCSAG", "message": message.to_dict()}))
+        """Legacy — kept for backward compat."""
+        self._broadcast(json.dumps({"type": "POCSAG", "message": message}))
+
+    def _broadcast_decoder_message(self, message):
+        """Generic decoder message broadcast."""
+        decoder_name = message.get("decoder", "unknown").upper()
+        self._broadcast(json.dumps({"type": decoder_name, "message": message}))
 
     def _load_bookmarks(self):
         try:
@@ -275,7 +287,24 @@ class SDRServer:
                 self.scanner.set_resume_delay(float(msg.get("value", 2.0)))
             elif t == "TOGGLE_POCSAG":
                 self.decode_pocsag = bool(msg.get("value", False))
+                if self.pocsag:
+                    self.pocsag.enabled = self.decode_pocsag
                 logger.info(f"POCSAG decoder {'enabled' if self.decode_pocsag else 'disabled'}")
+            elif t == "TOGGLE_DECODER":
+                name = msg.get("name", "")
+                enabled = bool(msg.get("value", False))
+                if name in self.decoders:
+                    self.decoders[name].enabled = enabled
+                    if name == "pocsag":
+                        self.decode_pocsag = enabled
+                    logger.info(f"Decoder '{name}' {'enabled' if enabled else 'disabled'}")
+                    self._broadcast(json.dumps({"type": "DECODER_STATE", "name": name, "enabled": enabled}))
+            elif t == "LIST_DECODERS":
+                infos = [d.info() for d in self.decoders.values()]
+                try:
+                    await ws.send(json.dumps({"type": "DECODER_LIST", "decoders": infos}))
+                except Exception:
+                    pass
             elif t == "GET_SCAN_CATEGORIES":
                 cats = self.scanner.get_categories()
                 try:
@@ -321,7 +350,7 @@ class SDRServer:
                 self.rtl.connected = False
                 await asyncio.sleep(0.1)
 
-    def _process_chunk(self, data, streaming, dsp, decoder, decode_enabled,
+    def _process_chunk(self, data, streaming, dsp, decoders, decode_enabled,
                        iq_recording, iq_file, audio_recording, audio_wav):
         """Run in thread pool."""
         # IQ recording
@@ -336,12 +365,30 @@ class SDRServer:
         iq = raw[0::2] + 1j * raw[1::2]
         fft = dsp.compute_fft(iq)
 
-        # Demodulate if streaming, decoding, or audio recording
-        should_demod = streaming or decode_enabled or audio_recording
+        # Check if any decoder needs audio or IQ
+        any_audio_decoder = any(
+            d.enabled and d.input_type.name == "AUDIO" for d in decoders.values()
+        ) if decode_enabled else False
+        any_iq_decoder = any(
+            d.enabled and d.input_type.name == "IQ" for d in decoders.values()
+        ) if decode_enabled else False
+
+        # Demodulate if streaming, decoding (audio type), or audio recording
+        should_demod = streaming or any_audio_decoder or audio_recording
         audio = dsp.demodulate(iq) if should_demod else None
 
-        if decode_enabled and audio is not None:
-            decoder.process_audio(audio)
+        # Feed enabled decoders
+        if decode_enabled:
+            for dec in decoders.values():
+                if not dec.enabled:
+                    continue
+                try:
+                    if dec.input_type.name == "AUDIO" and audio is not None:
+                        dec.process_audio(audio)
+                    elif dec.input_type.name == "IQ":
+                        dec.process_iq(iq)
+                except Exception:
+                    logger.exception(f"Decoder '{dec.name}' error")
 
         # Audio recording — write demodulated audio as 16-bit PCM to WAV
         if audio_recording and audio_wav and audio is not None and len(audio) > 0:
@@ -361,7 +408,8 @@ class SDRServer:
             try:
                 audio, fft = await self._loop.run_in_executor(
                     self._executor, self._process_chunk,
-                    data, self.streaming, self.dsp, self.pocsag, self.decode_pocsag,
+                    data, self.streaming, self.dsp, self.decoders,
+                    any(d.enabled for d in self.decoders.values()),
                     self.iq_recording, self.iq_capture_file,
                     self.audio_recording, self.audio_wav_file
                 )

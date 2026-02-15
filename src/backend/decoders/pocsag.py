@@ -9,7 +9,7 @@ import numpy as np
 import logging
 import time
 from collections import deque
-from . import BaseDecoder
+from .base import BaseDecoder, InputType
 
 logger = logging.getLogger(__name__)
 
@@ -48,9 +48,18 @@ class POCSAGMessage:
 class POCSAGDecoder(BaseDecoder):
     """POCSAG decoder operating on FM-demodulated audio samples."""
 
+    name = "pocsag"
+    description = "POCSAG pager decoder (512/1200/2400 baud)"
+    input_type = InputType.AUDIO
+
     def __init__(self, sample_rate=48000):
         super().__init__(sample_rate=sample_rate)
         self.messages = deque(maxlen=200)
+        self._sample_buffer = np.array([], dtype=np.float32)
+
+    def reset(self):
+        """Clear internal buffers and message history."""
+        self.messages.clear()
         self._sample_buffer = np.array([], dtype=np.float32)
 
     def get_history(self, limit=50) -> list:
