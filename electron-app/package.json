@@ -1,0 +1,43 @@
+{
+  "name": "evilsdr-electron",
+  "version": "0.1.0",
+  "description": "Standalone evilSDR desktop shell that ships the Python backend + UI together",
+  "main": "src/main.js",
+  "author": "Sydney (via Alan)",
+  "license": "MIT",
+  "scripts": {
+    "start": "electron .",
+    "build": "electron-builder --linux"
+  },
+  "devDependencies": {
+    "electron": "^34.0.0",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "com.evil-admin.evilsdr",
+    "productName": "evilsdr-electron",
+    "linux": {
+      "target": ["dir"],
+      "category": "Utility",
+      "executableName": "evilsdr-electron",
+      "icon": "../assets/evilSDR.png"
+    },
+    "extraResources": [
+      {
+        "from": "../",
+        "to": "evilSDR",
+        "filter": [
+          "src/**",
+          "requirements.txt",
+          "README.md",
+          "docs/**",
+          "assets/**"
+        ]
+      },
+      {
+        "from": "../assets/evilSDR.png",
+        "to": "evilSDR.png"
+      }
+    ]
+  }
+}
