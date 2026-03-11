@@ -138,7 +138,7 @@ function wireControls() {
     document.getElementById('bookmark-modal').style.display = 'none';
   };
 
-  document.getElementById('btn-power').onclick = disconnectHardware;
+  document.getElementById('btn-power').onclick = toggleHardwareConnection;
   document.getElementById('btn-connect-modal').onclick = openConnectionModal;
   document.getElementById('btn-close-connect').onclick = closeConnectionModal;
   document.getElementById('btn-save-connection').onclick = saveConnectionProfile;
@@ -836,6 +836,14 @@ function connectFromForm() {
   connectionConnected = false;
   updateConnectionStatusLine(`Connecting to ${name}...`);
   sendJSON({ type: 'CONNECT', host, port, driver, sample_rate, name, profile_id: profileId });
+}
+
+function toggleHardwareConnection() {
+  if (connectionConnected) {
+    disconnectHardware();
+  } else {
+    connectFromForm();
+  }
 }
 
 function disconnectHardware() {
