@@ -1,5 +1,7 @@
 src/backend/config.json
 src/backend/bookmarks.json
+src/backend/connections.json
+src/backend/metadata_prefs.json
 recordings/
 venv/
 __pycache__/

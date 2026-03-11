@@ -10,6 +10,8 @@ const BACKEND_DIR = app.isPackaged
   ? path.join(process.resourcesPath, 'evilSDR')
   : path.join(__dirname, '..', '..');
 const BACKEND_ENTRY = path.join(BACKEND_DIR, 'src', 'backend', 'server.py');
+const DEV_VENV_PYTHON = path.join(BACKEND_DIR, '.venv', 'bin', 'python');
+const BUNDLED_VENV_PYTHON = path.join(BACKEND_DIR, 'src', 'backend', 'venv', 'bin', 'python');
 const DATA_ROOT = path.join(app.getPath('userData'), 'evilSDR');
 const iconPath = app.isPackaged
   ? path.join(process.resourcesPath, 'evilSDR.png')
@@ -23,9 +25,14 @@ function ensureDataFiles() {
   const copies = ['config.json', 'bookmarks.json', 'connections.json', 'metadata_prefs.json'];
   copies.forEach(file => {
     const target = path.join(DATA_ROOT, file);
-    if (!fs.existsSync(target)) {
-      const src = path.join(BACKEND_DIR, 'src', 'backend', file);
-      if (fs.existsSync(src)) fs.copyFileSync(src, target);
+    if (fs.existsSync(target)) return;
+
+    const preferred = path.join(BACKEND_DIR, 'src', 'backend', file);
+    const fallback = path.join(BACKEND_DIR, 'src', 'backend', `${file}.example`);
+    const src = fs.existsSync(preferred) ? preferred : fallback;
+
+    if (fs.existsSync(src)) {
+      fs.copyFileSync(src, target);
     }
   });
   fs.mkdirSync(path.join(DATA_ROOT, 'recordings'), { recursive: true });
@@ -73,9 +80,16 @@ function createWindow() {
   });
 }
 
+function resolvePython() {
+  if (process.env.PYTHON) return process.env.PYTHON;
+  if (!app.isPackaged && fs.existsSync(DEV_VENV_PYTHON)) return DEV_VENV_PYTHON;
+  if (app.isPackaged && fs.existsSync(BUNDLED_VENV_PYTHON)) return BUNDLED_VENV_PYTHON;
+  return 'python3';
+}
+
 function startBackend() {
   ensureDataFiles();
-  const python = process.env.PYTHON || 'python3';
+  const python = resolvePython();
   backendProcess = spawn(python, [BACKEND_ENTRY], {
     env: {
       ...process.env,

@@ -33,10 +33,10 @@ cat <<'APP' > "$APPDIR/AppRun"
 #!/usr/bin/env bash
 set -euo pipefail
 here="$(dirname "$(readlink -f "$0")")"
-BACKEND_RES="$here/resources/evilSDR/backend"
+BACKEND_RES="$here/resources/evilSDR/src/backend"
 DATA_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/evilSDR"
 mkdir -p "$DATA_DIR/recordings"
-cp -n "$BACKEND_RES/config.json" "$DATA_DIR/config.json" 2>/dev/null || true
+cp -n "$BACKEND_RES/config.json" "$DATA_DIR/config.json" 2>/dev/null || cp -n "$BACKEND_RES/config.json.example" "$DATA_DIR/config.json" 2>/dev/null || true
 cp -n "$BACKEND_RES/bookmarks.json" "$DATA_DIR/bookmarks.json" 2>/dev/null || true
 cp -n "$BACKEND_RES/connections.json" "$DATA_DIR/connections.json" 2>/dev/null || true
 cp -n "$BACKEND_RES/metadata_prefs.json" "$DATA_DIR/metadata_prefs.json" 2>/dev/null || true

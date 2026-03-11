@@ -5,6 +5,7 @@ import asyncio
 import json
 import logging
 import mimetypes
+import os
 import time
 import wave
 import struct as pystruct
@@ -28,7 +29,7 @@ from decoders import load_decoders
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(message)s")
 logger = logging.getLogger("evilSDR")
 
-CONFIG_FILE = Path(__file__).parent / "config.json"
+CONFIG_FILE = Path(os.environ.get("EVILSDR_CONFIG_FILE", Path(__file__).parent / "config.json"))
 
 def load_config():
     defaults = {
@@ -62,9 +63,9 @@ DEFAULT_FREQ = config["default_freq"]
 READ_SIZE = 131072
 
 FRONTEND_DIR = Path(__file__).parent.parent / "frontend"
-BOOKMARKS_FILE = Path(__file__).parent / "bookmarks.json"
-RECORDINGS_DIR = Path(__file__).parent.parent.parent / "recordings"
-RECORDINGS_DIR.mkdir(exist_ok=True)
+BOOKMARKS_FILE = Path(os.environ.get("EVILSDR_BOOKMARKS_FILE", Path(__file__).parent / "bookmarks.json"))
+RECORDINGS_DIR = Path(os.environ.get("EVILSDR_RECORDINGS_DIR", Path(__file__).parent.parent.parent / "recordings"))
+RECORDINGS_DIR.mkdir(parents=True, exist_ok=True)
 
 
 class SDRServer:
