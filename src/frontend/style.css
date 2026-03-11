@@ -43,7 +43,9 @@ body {
   gap: 16px;
   z-index: 10;
 }
-.header .logo { font-size: 18px; color: var(--accent); text-shadow: var(--glow); font-weight: 700; letter-spacing: 1px; }
+.header .logo { display:flex; align-items:center; gap:8px; font-size: 32px; color: var(--accent); text-shadow: var(--glow); font-weight: 700; letter-spacing: 1px; }
+.header .logo img { width:20px; height:20px; object-fit:contain; border-radius:4px; }
+.header .logo span { font-size:32px; line-height:1; }
 .header .freq-display {
   font-size: 28px;
   color: var(--accent-cyan);

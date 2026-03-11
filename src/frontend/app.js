@@ -138,6 +138,7 @@ function wireControls() {
     document.getElementById('bookmark-modal').style.display = 'none';
   };
 
+  document.getElementById('btn-power').onclick = disconnectHardware;
   document.getElementById('btn-connect-modal').onclick = openConnectionModal;
   document.getElementById('btn-close-connect').onclick = closeConnectionModal;
   document.getElementById('btn-save-connection').onclick = saveConnectionProfile;
