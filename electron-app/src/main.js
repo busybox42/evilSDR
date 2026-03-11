@@ -1,4 +1,4 @@
-const { app, BrowserWindow, dialog, ipcMain } = require('electron');
+const { app, BrowserWindow, dialog } = require('electron');
 const { spawn } = require('child_process');
 const path = require('path');
 const fs = require('fs');
@@ -10,29 +10,28 @@ const BACKEND_DIR = app.isPackaged
   ? path.join(process.resourcesPath, 'evilSDR')
   : path.join(__dirname, '..', '..');
 const BACKEND_ENTRY = path.join(BACKEND_DIR, 'src', 'backend', 'server.py');
-const DEV_VENV_PYTHON = path.join(BACKEND_DIR, '.venv', 'bin', 'python');
-const BUNDLED_VENV_PYTHON = path.join(BACKEND_DIR, 'src', 'backend', 'venv', 'bin', 'python');
 const DATA_ROOT = path.join(app.getPath('userData'), 'evilSDR');
-const iconPath = app.isPackaged
-  ? path.join(process.resourcesPath, 'evilSDR.png')
-  : path.join(BACKEND_DIR, 'assets', 'evilSDR.png');
 
 let mainWindow = null;
 let backendProcess = null;
 
 function ensureDataFiles() {
   fs.mkdirSync(DATA_ROOT, { recursive: true });
-  const copies = ['config.json', 'bookmarks.json', 'connections.json', 'metadata_prefs.json'];
+  const copies = [
+    'config.json',
+    'bookmarks.json',
+    'connections.json',
+    'metadata_prefs.json'
+  ];
   copies.forEach(file => {
     const target = path.join(DATA_ROOT, file);
-    if (fs.existsSync(target)) return;
-
-    const preferred = path.join(BACKEND_DIR, 'src', 'backend', file);
-    const fallback = path.join(BACKEND_DIR, 'src', 'backend', `${file}.example`);
-    const src = fs.existsSync(preferred) ? preferred : fallback;
-
-    if (fs.existsSync(src)) {
-      fs.copyFileSync(src, target);
+    if (!fs.existsSync(target)) {
+      const preferred = path.join(BACKEND_DIR, 'src', 'backend', file);
+      const fallback = path.join(BACKEND_DIR, 'src', 'backend', `${file}.example`);
+      const src = fs.existsSync(preferred) ? preferred : fallback;
+      if (fs.existsSync(src)) {
+        fs.copyFileSync(src, target);
+      }
     }
   });
   fs.mkdirSync(path.join(DATA_ROOT, 'recordings'), { recursive: true });
@@ -62,15 +61,12 @@ function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1400,
     height: 900,
-    frame: false,
     webPreferences: {
       contextIsolation: true,
-      nodeIntegration: false,
-      preload: path.join(__dirname, 'preload.js'),
+      nodeIntegration: false
     },
     title: 'evilSDR',
-    autoHideMenuBar: true,
-    icon: iconPath,
+    autoHideMenuBar: true
   });
   mainWindow.loadURL(`http://${SERVER_HOST}:${SERVER_PORT}`);
   mainWindow.on('closed', () => {
@@ -82,16 +78,9 @@ function createWindow() {
   });
 }
 
-function resolvePython() {
-  if (process.env.PYTHON) return process.env.PYTHON;
-  if (!app.isPackaged && fs.existsSync(DEV_VENV_PYTHON)) return DEV_VENV_PYTHON;
-  if (app.isPackaged && fs.existsSync(BUNDLED_VENV_PYTHON)) return BUNDLED_VENV_PYTHON;
-  return 'python3';
-}
-
 function startBackend() {
   ensureDataFiles();
-  const python = resolvePython();
+  const python = process.env.PYTHON || 'python3';
   backendProcess = spawn(python, [BACKEND_ENTRY], {
     env: {
       ...process.env,
@@ -100,10 +89,10 @@ function startBackend() {
       EVILSDR_BOOKMARKS_FILE: path.join(DATA_ROOT, 'bookmarks.json'),
       EVILSDR_CONNECTIONS_FILE: path.join(DATA_ROOT, 'connections.json'),
       EVILSDR_METADATA_PREFS_FILE: path.join(DATA_ROOT, 'metadata_prefs.json'),
-      EVILSDR_RECORDINGS_DIR: path.join(DATA_ROOT, 'recordings'),
+      EVILSDR_RECORDINGS_DIR: path.join(DATA_ROOT, 'recordings')
     },
     cwd: BACKEND_DIR,
-    stdio: ['ignore', 'pipe', 'pipe'],
+    stdio: ['ignore', 'pipe', 'pipe']
   });
 
   backendProcess.stdout.on('data', chunk => process.stdout.write(`[backend STDOUT] ${chunk}`));
@@ -120,24 +109,8 @@ function startBackend() {
 }
 
 app.whenReady().then(() => {
-  ipcMain.on('window:minimize', () => {
-    if (mainWindow) mainWindow.minimize();
-  });
-  ipcMain.on('window:maximize-toggle', () => {
-    if (!mainWindow) return;
-    if (mainWindow.isMaximized()) mainWindow.unmaximize();
-    else mainWindow.maximize();
-  });
-  ipcMain.on('window:close', () => {
-    if (mainWindow) mainWindow.close();
-  });
-
   startBackend()
-    .then(() => {
-      createWindow();
-      mainWindow.on('maximize', () => mainWindow.webContents.send('window:maximized'));
-      mainWindow.on('unmaximize', () => mainWindow.webContents.send('window:unmaximized'));
-    })
+    .then(() => createWindow())
     .catch(err => {
       dialog.showErrorBox('evilSDR', `Failed to start backend: ${err.message}`);
       app.quit();
@@ -145,10 +118,14 @@ app.whenReady().then(() => {
 });
 
 app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') app.quit();
+  if (process.platform !== 'darwin') {
+    app.quit();
+  }
 });
 
 app.on('before-quit', () => {
   app.isQuitting = true;
-  if (backendProcess) backendProcess.kill();
+  if (backendProcess) {
+    backendProcess.kill();
+  }
 });
