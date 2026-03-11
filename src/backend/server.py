@@ -3,14 +3,16 @@
 
 import asyncio
 import json
+import os
 import logging
 import mimetypes
-import os
 import time
+import uuid
 import wave
 import struct as pystruct
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
+from threading import Lock
 
 import numpy as np
 
@@ -30,6 +32,9 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(message
 logger = logging.getLogger("evilSDR")
 
 CONFIG_FILE = Path(os.environ.get("EVILSDR_CONFIG_FILE", Path(__file__).parent / "config.json"))
+BOOKMARKS_FILE = Path(os.environ.get("EVILSDR_BOOKMARKS_FILE", Path(__file__).parent / "bookmarks.json"))
+CONNECTIONS_FILE = Path(os.environ.get("EVILSDR_CONNECTIONS_FILE", Path(__file__).parent / "connections.json"))
+RECORDINGS_DIR = Path(os.environ.get("EVILSDR_RECORDINGS_DIR", Path(__file__).parent.parent.parent / "recordings"))
 
 def load_config():
     defaults = {
@@ -63,8 +68,7 @@ DEFAULT_FREQ = config["default_freq"]
 READ_SIZE = 131072
 
 FRONTEND_DIR = Path(__file__).parent.parent / "frontend"
-BOOKMARKS_FILE = Path(os.environ.get("EVILSDR_BOOKMARKS_FILE", Path(__file__).parent / "bookmarks.json"))
-RECORDINGS_DIR = Path(os.environ.get("EVILSDR_RECORDINGS_DIR", Path(__file__).parent.parent.parent / "recordings"))
+DEFAULT_CONNECTION_ID = "local-rtl"
 RECORDINGS_DIR.mkdir(parents=True, exist_ok=True)
 
 
@@ -78,7 +82,17 @@ class SDRServer:
         self._executor = ThreadPoolExecutor(max_workers=1)
         self._loop = None
         self._raw_queue = asyncio.Queue(maxsize=20)
+        self._connections_lock = Lock()
+        self.connections = self._load_connections()
+        self._desired_connection = None
+        self._desired_connection_id = None
+        self._desired_connection_nonce = 0
         self.bookmarks = self._load_bookmarks()
+        
+        # Thread safety locks
+        self._clients_lock = Lock()  # Protects clients dict
+        self._recording_lock = Lock()  # Protects recording state and file handles
+        self._dsp_lock = Lock()  # Protects DSP state during reads
 
         # Scanner & Decoders (plugin architecture)
         self.scanner = Scanner(self.rtl, self.dsp, bookmarks_file=BOOKMARKS_FILE)
@@ -131,9 +145,12 @@ class SDRServer:
 
     def _load_bookmarks(self):
         try:
-            return json.loads(BOOKMARKS_FILE.read_text()) if BOOKMARKS_FILE.exists() else {"categories": []}
+            if BOOKMARKS_FILE.exists():
+                data = json.loads(BOOKMARKS_FILE.read_text())
+                return data if isinstance(data, (list, dict)) else []
+            return []
         except Exception:
-            return {"categories": []}
+            return []
 
     def _save_bookmarks(self, data):
         try:
@@ -143,65 +160,170 @@ class SDRServer:
         except Exception:
             return False
 
+    def _default_connection_entry(self):
+        return {
+            "id": DEFAULT_CONNECTION_ID,
+            "name": "Local RTL-TCP",
+            "host": RTL_HOST,
+            "port": RTL_PORT,
+            "driver": "rtl_tcp",
+            "sample_rate": SAMPLE_RATE,
+        }
+
+    def _load_connections(self):
+        try:
+            if CONNECTIONS_FILE.exists():
+                data = json.loads(CONNECTIONS_FILE.read_text())
+                entries = data.get("connections") if isinstance(data, dict) else data
+                if isinstance(entries, list) and entries:
+                    return entries
+        except Exception as exc:
+            logger.warning(f"Failed to load connections: {exc}")
+
+        default = self._default_connection_entry()
+        try:
+            CONNECTIONS_FILE.write_text(json.dumps({"connections": [default]}, indent=2))
+        except Exception:
+            pass
+        return [default]
+
+    def _save_connections(self):
+        with self._connections_lock:
+            payload = {"connections": self.connections}
+        try:
+            CONNECTIONS_FILE.write_text(json.dumps(payload, indent=2))
+            return True
+        except Exception as exc:
+            logger.warning(f"Failed to save connections: {exc}")
+            return False
+
+    def _drain_raw_queue(self):
+        while not self._raw_queue.empty():
+            try:
+                self._raw_queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+
+    def _broadcast_connection_state(self, connected, config=None, profile_id=None, reason=None):
+        msg = {
+            "type": "CONNECTION_CHANGED",
+            "connected": connected,
+            "profile_id": profile_id,
+        }
+        if config:
+            msg.update({
+                "host": config.get("host"),
+                "port": config.get("port"),
+                "driver": config.get("driver"),
+                "sample_rate": config.get("sample_rate"),
+                "name": config.get("name") or f"{config.get('host')}:{config.get('port')}",
+            })
+        if reason:
+            msg["reason"] = reason
+        self._broadcast(json.dumps(msg))
+
+    async def _apply_connection_config(self, config):
+        host = config.get("host", RTL_HOST)
+        port = int(config.get("port", RTL_PORT))
+        sample_rate = int(config.get("sample_rate", SAMPLE_RATE))
+        self.rtl.host = host
+        self.rtl.port = port
+        self.rtl.sample_rate = sample_rate
+        self._drain_raw_queue()
+        await self.rtl.connect()
+        await self.rtl.set_center_freq(DEFAULT_FREQ)
+        self._broadcast(json.dumps({
+            "type": "FREQ_CHANGED",
+            "value": self.rtl.center_freq
+        }))
+        if self.dsp.sample_rate != sample_rate:
+            with self._dsp_lock:
+                self.dsp = RadioDSP(sample_rate=sample_rate, fft_size=FFT_SIZE)
+                self.scanner.dsp = self.dsp
+
+    async def _disconnect_hardware(self, config=None, profile_id=None, reason=None):
+        if self.streaming:
+            self.streaming = False
+            self._broadcast(json.dumps({"type": "STREAM_STATE", "streaming": False}))
+        if self.rtl.connected:
+            try:
+                await self.rtl.disconnect()
+            except Exception:
+                pass
+        self._broadcast_connection_state(False, config, profile_id, reason or "disconnected")
+
     def _start_iq_recording(self):
-        if self.iq_recording:
-            return
-        fname = f"iq_{int(time.time())}.raw"
-        fpath = RECORDINGS_DIR / fname
-        self.iq_capture_file = open(fpath, "wb")
-        self.iq_capture_filename = fname
-        self.iq_recording = True
+        with self._recording_lock:
+            if self.iq_recording:
+                return
+            fname = f"iq_{int(time.time())}.raw"
+            fpath = RECORDINGS_DIR / fname
+            self.iq_capture_file = open(fpath, "wb")
+            self.iq_capture_filename = fname
+            self.iq_recording = True
+            audio_rec = self.audio_recording
         logger.info(f"IQ recording started: {fname}")
         self._broadcast(json.dumps({"type": "RECORD_STATUS", "iq": True, "iq_file": fname,
-                                     "audio": self.audio_recording}))
+                                     "audio": audio_rec}))
 
     def _stop_iq_recording(self):
-        if not self.iq_recording:
-            return
-        try:
-            self.iq_capture_file.close()
-        except Exception:
-            pass
-        self.iq_capture_file = None
-        logger.info(f"IQ recording stopped: {self.iq_capture_filename}")
-        self.iq_recording = False
-        self._broadcast(json.dumps({"type": "RECORD_STATUS", "iq": False, "audio": self.audio_recording}))
-        self.iq_capture_filename = None
+        with self._recording_lock:
+            if not self.iq_recording:
+                return
+            fname = self.iq_capture_filename
+            try:
+                self.iq_capture_file.close()
+            except Exception:
+                pass
+            self.iq_capture_file = None
+            self.iq_recording = False
+            self.iq_capture_filename = None
+            audio_rec = self.audio_recording
+        logger.info(f"IQ recording stopped: {fname}")
+        self._broadcast(json.dumps({"type": "RECORD_STATUS", "iq": False, "audio": audio_rec}))
 
     def _start_audio_recording(self):
-        if self.audio_recording:
-            return
-        fname = f"audio_{int(time.time())}.wav"
-        fpath = RECORDINGS_DIR / fname
-        self.audio_wav_file = wave.open(str(fpath), "wb")
-        self.audio_wav_file.setnchannels(1)
-        self.audio_wav_file.setsampwidth(2)  # 16-bit
-        self.audio_wav_file.setframerate(48000)
-        self.audio_wav_filename = fname
-        self.audio_recording = True
+        with self._recording_lock:
+            if self.audio_recording:
+                return
+            fname = f"audio_{int(time.time())}.wav"
+            fpath = RECORDINGS_DIR / fname
+            self.audio_wav_file = wave.open(str(fpath), "wb")
+            self.audio_wav_file.setnchannels(1)
+            self.audio_wav_file.setsampwidth(2)  # 16-bit
+            self.audio_wav_file.setframerate(48000)
+            self.audio_wav_filename = fname
+            self.audio_recording = True
+            iq_rec = self.iq_recording
         logger.info(f"Audio recording started: {fname}")
         self._broadcast(json.dumps({"type": "RECORD_STATUS", "audio": True, "audio_file": fname,
-                                     "iq": self.iq_recording}))
+                                     "iq": iq_rec}))
 
     def _stop_audio_recording(self):
-        if not self.audio_recording:
-            return
-        try:
-            self.audio_wav_file.close()
-        except Exception:
-            pass
-        self.audio_wav_file = None
-        logger.info(f"Audio recording stopped: {self.audio_wav_filename}")
-        self.audio_recording = False
-        self._broadcast(json.dumps({"type": "RECORD_STATUS", "audio": False, "iq": self.iq_recording}))
-        self.audio_wav_filename = None
+        with self._recording_lock:
+            if not self.audio_recording:
+                return
+            fname = self.audio_wav_filename
+            try:
+                self.audio_wav_file.close()
+            except Exception:
+                pass
+            self.audio_wav_file = None
+            self.audio_recording = False
+            self.audio_wav_filename = None
+            iq_rec = self.iq_recording
+        logger.info(f"Audio recording stopped: {fname}")
+        self._broadcast(json.dumps({"type": "RECORD_STATUS", "audio": False, "iq": iq_rec}))
 
     async def register(self, ws):
         queue = asyncio.Queue(maxsize=100)
-        self.clients[ws] = {"queue": queue, "audio": None}
+        with self._clients_lock:
+            self.clients[ws] = {"queue": queue, "audio": None}
+            num_clients = len(self.clients)
+        
         asyncio.create_task(self._client_sender(ws, queue))
 
-        logger.info(f"Client connected ({len(self.clients)} total)")
+        logger.info(f"Client connected ({num_clients} total)")
         await ws.send(json.dumps({
             "type": "STATE",
             "mode": self.dsp.mode,
@@ -212,13 +334,20 @@ class SDRServer:
             "rtl_host": self.rtl.host,
             "rtl_port": self.rtl.port,
             "fft_size": FFT_SIZE,
+            "connected": self.rtl.connected,
+            "connection_id": self._desired_connection_id,
+            "connection_name": self._desired_connection["name"] if self._desired_connection else None,
+            "connection_driver": self._desired_connection["driver"] if self._desired_connection else None,
+            "connection_sample_rate": self.rtl.sample_rate,
             "iq_recording": self.iq_recording,
             "audio_recording": self.audio_recording,
         }))
 
     async def unregister(self, ws):
-        self.clients.pop(ws, None)
-        logger.info(f"Client disconnected ({len(self.clients)} total)")
+        with self._clients_lock:
+            self.clients.pop(ws, None)
+            num_clients = len(self.clients)
+        logger.info(f"Client disconnected ({num_clients} total)")
 
     async def _client_sender(self, ws, queue):
         try:
@@ -226,10 +355,15 @@ class SDRServer:
                 msg = await queue.get()
                 try:
                     await ws.send(msg)
-                    client = self.clients.get(ws)
-                    if client and client["audio"] is not None:
-                        audio_msg = client["audio"]
-                        client["audio"] = None
+                    # Check for pending audio message
+                    with self._clients_lock:
+                        client = self.clients.get(ws)
+                        if client and client["audio"] is not None:
+                            audio_msg = client["audio"]
+                            client["audio"] = None
+                        else:
+                            audio_msg = None
+                    if audio_msg:
                         await ws.send(audio_msg)
                 except Exception:
                     break
@@ -239,7 +373,11 @@ class SDRServer:
     def _broadcast(self, msg, audio=False):
         if not self._loop:
             return
-        for client_info in self.clients.values():
+        # Create snapshot to avoid RuntimeError during client connect/disconnect
+        with self._clients_lock:
+            clients_snapshot = list(self.clients.values())
+        
+        for client_info in clients_snapshot:
             if audio:
                 client_info["audio"] = msg
             else:
@@ -252,6 +390,28 @@ class SDRServer:
         try:
             msg = json.loads(message)
             t = msg.get("type", "")
+            if t == "CONNECT":
+                host = msg.get("host", RTL_HOST)
+                port = int(msg.get("port", RTL_PORT))
+                sample_rate = int(msg.get("sample_rate", SAMPLE_RATE))
+                driver = msg.get("driver", "rtl_tcp")
+                name = msg.get("name") or f"{host}:{port}"
+                profile_id = msg.get("profile_id") or uuid.uuid4().hex
+                self._desired_connection = {
+                    "host": host,
+                    "port": port,
+                    "driver": driver,
+                    "sample_rate": sample_rate,
+                    "name": name,
+                }
+                self._desired_connection_id = profile_id
+                self._desired_connection_nonce += 1
+                return
+            elif t == "DISCONNECT":
+                self._desired_connection = None
+                self._desired_connection_id = None
+                self._desired_connection_nonce += 1
+                return
             if t == "START_STREAM":
                 self.streaming = True
                 self._broadcast(json.dumps({"type": "STREAM_STATE", "streaming": True}))
@@ -259,11 +419,15 @@ class SDRServer:
                 self.streaming = False
                 self._broadcast(json.dumps({"type": "STREAM_STATE", "streaming": False}))
             elif t == "SET_MODE":
-                self.dsp.set_mode(msg.get("mode", "FM"))
-                self._broadcast(json.dumps({"type": "MODE_CHANGED", "mode": self.dsp.mode}))
+                with self._dsp_lock:
+                    self.dsp.set_mode(msg.get("mode", "FM"))
+                    mode = self.dsp.mode
+                self._broadcast(json.dumps({"type": "MODE_CHANGED", "mode": mode}))
             elif t == "SET_SQUELCH":
-                self.dsp.set_squelch(float(msg.get("value", -60)))
-                self._broadcast(json.dumps({"type": "SQUELCH_CHANGED", "value": self.dsp.squelch_threshold}))
+                with self._dsp_lock:
+                    self.dsp.set_squelch(float(msg.get("value", -60)))
+                    squelch = self.dsp.squelch_threshold
+                self._broadcast(json.dumps({"type": "SQUELCH_CHANGED", "value": squelch}))
             elif t == "SET_FREQ":
                 await self.rtl.set_center_freq(int(msg.get("value", 100000000)))
                 self._broadcast(json.dumps({"type": "FREQ_CHANGED", "value": self.rtl.center_freq}))
@@ -353,20 +517,25 @@ class SDRServer:
                 self.rtl.connected = False
                 await asyncio.sleep(0.1)
 
-    def _process_chunk(self, data, streaming, dsp, decoders, decode_enabled,
-                       iq_recording, iq_file, audio_recording, audio_wav):
-        """Run in thread pool."""
-        # IQ recording
+    def _process_chunk(self, data, streaming, dsp, dsp_lock, decoders, decode_enabled,
+                       iq_recording, iq_file, audio_recording, audio_wav, recording_lock):
+        """Run in thread pool. Thread-safe with lock protection."""
+        # IQ recording (file handle protected by recording_lock)
         if iq_recording and iq_file:
-            try:
-                iq_file.write(data)
-            except Exception:
-                pass
+            with recording_lock:
+                try:
+                    if iq_file:  # Re-check after acquiring lock
+                        iq_file.write(data)
+                except Exception:
+                    pass
 
         raw = np.frombuffer(data, dtype=np.uint8).astype(np.float32)
         raw = (raw - 127.5) / 127.5
         iq = raw[0::2] + 1j * raw[1::2]
-        fft = dsp.compute_fft(iq)
+        
+        # DSP operations protected by lock (dsp state can change from main thread)
+        with dsp_lock:
+            fft = dsp.compute_fft(iq)
 
         # Check if any decoder needs audio or IQ
         any_audio_decoder = any(
@@ -378,7 +547,10 @@ class SDRServer:
 
         # Demodulate if streaming, decoding (audio type), or audio recording
         should_demod = streaming or any_audio_decoder or audio_recording
-        audio = dsp.demodulate(iq) if should_demod else None
+        audio = None
+        if should_demod:
+            with dsp_lock:
+                audio = dsp.demodulate(iq)
 
         # Feed enabled decoders
         if decode_enabled:
@@ -395,11 +567,13 @@ class SDRServer:
 
         # Audio recording — write demodulated audio as 16-bit PCM to WAV
         if audio_recording and audio_wav and audio is not None and len(audio) > 0:
-            try:
-                pcm16 = np.clip(audio * 32767, -32768, 32767).astype(np.int16)
-                audio_wav.writeframes(pcm16.tobytes())
-            except Exception:
-                pass
+            with recording_lock:
+                try:
+                    if audio_wav:  # Re-check after acquiring lock
+                        pcm16 = np.clip(audio * 32767, -32768, 32767).astype(np.int16)
+                        audio_wav.writeframes(pcm16.tobytes())
+                except Exception:
+                    pass
 
         return audio, fft
 
@@ -411,10 +585,10 @@ class SDRServer:
             try:
                 audio, fft = await self._loop.run_in_executor(
                     self._executor, self._process_chunk,
-                    data, self.streaming, self.dsp, self.decoders,
+                    data, self.streaming, self.dsp, self._dsp_lock, self.decoders,
                     any(d.enabled for d in self.decoders.values()),
                     self.iq_recording, self.iq_capture_file,
-                    self.audio_recording, self.audio_wav_file
+                    self.audio_recording, self.audio_wav_file, self._recording_lock
                 )
                 self._broadcast(b"\x01" + fft["magnitudes"].tobytes())
                 if audio is not None and len(audio) > 0:
@@ -432,27 +606,38 @@ class SDRServer:
             except Exception as e:
                 logger.error(f"Processing error: {e}")
 
-    async def connection_loop(self):
-        self._loop = asyncio.get_running_loop()
-        asyncio.create_task(self.reader_loop())
-        asyncio.create_task(self.processor_loop())
-        delay = 2
+    async def _connection_manager_loop(self):
+        active_config = None
+        active_profile = None
+        active_nonce = -1
         while self.running:
+            desired = self._desired_connection
+            desired_nonce = self._desired_connection_nonce
+            if not desired:
+                if active_config is not None:
+                    await self._disconnect_hardware(active_config, active_profile, reason="requested disconnect")
+                    active_config = None
+                    active_profile = None
+                    active_nonce = desired_nonce
+                await asyncio.sleep(0.1)
+                continue
+            if active_config and desired_nonce == active_nonce:
+                await asyncio.sleep(0.1)
+                continue
+            if active_config:
+                await self._disconnect_hardware(active_config, active_profile, reason="switching connection")
+                active_config = None
+                active_profile = None
             try:
-                logger.info(f"Connecting to rtl_tcp at {self.rtl.host}:{self.rtl.port}...")
-                await self.rtl.connect()
-                delay = 2
-                await self.rtl.set_center_freq(DEFAULT_FREQ)
-                self._broadcast(json.dumps({"type": "CONNECTION_CHANGED",
-                    "host": self.rtl.host, "port": self.rtl.port, "connected": True, "freq": DEFAULT_FREQ}))
-                while self.running and self.rtl.connected:
-                    await asyncio.sleep(1)
-            except Exception as e:
-                logger.warning(f"RTL-TCP connection failed: {e}")
-                self._broadcast(json.dumps({"type": "CONNECTION_CHANGED",
-                    "host": self.rtl.host, "port": self.rtl.port, "connected": False}))
-                await asyncio.sleep(delay)
-                delay = min(delay * 2, 30)
+                await self._apply_connection_config(desired)
+                active_config = dict(desired)
+                active_profile = self._desired_connection_id
+                active_nonce = desired_nonce
+                self._broadcast_connection_state(True, config=active_config, profile_id=active_profile, reason="connected")
+            except Exception as exc:
+                logger.warning(f"Connection manager error: {exc}")
+                self._broadcast_connection_state(False, config=desired, profile_id=self._desired_connection_id, reason=str(exc))
+                await asyncio.sleep(2)
 
     async def http_handler(self, reader, writer):
         try:
@@ -474,9 +659,56 @@ class SDRServer:
                         body_part = req.split(b"\r\n\r\n", 1)[1]
                         data = json.loads(body_part.decode())
                         if self._save_bookmarks(data):
-                            writer.write(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\nContent-Length: 11\r\n\r\n{\"ok\":true}")
+                            writer.write(b'HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\nContent-Length: 11\r\n\r\n{"ok":true}')
                         else:
-                            writer.write(b"HTTP/1.1 500 Error\r\nAccess-Control-Allow-Origin: *\r\nContent-Length: 12\r\n\r\n{\"ok\":false}")
+                            writer.write(b'HTTP/1.1 500 Error\r\nAccess-Control-Allow-Origin: *\r\nContent-Length: 12\r\n\r\n{"ok":false}')
+                    except Exception:
+                        writer.write(b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n")
+                elif method == "OPTIONS":
+                    writer.write(b"HTTP/1.1 204 No Content\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type\r\n\r\n")
+            elif path == "/api/connections":
+                if method == "GET":
+                    payload = {
+                        "connections": self.connections,
+                        "selected_id": self._desired_connection_id,
+                        "connected": self.rtl.connected,
+                        "connection_name": (self._desired_connection.get("name") if self._desired_connection else None),
+                        "connection_driver": (self._desired_connection.get("driver") if self._desired_connection else None),
+                        "connection_sample_rate": (self._desired_connection.get("sample_rate") if self._desired_connection else None),
+                        "connection_host": (self._desired_connection.get("host") if self._desired_connection else None),
+                        "connection_port": (self._desired_connection.get("port") if self._desired_connection else None),
+                    }
+                    body = json.dumps(payload).encode()
+                    writer.write(f"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {len(body)}\r\nAccess-Control-Allow-Origin: *\r\n\r\n".encode() + body)
+                elif method == "POST":
+                    try:
+                        body_part = req.split(b"\r\n\r\n", 1)[1]
+                        data = json.loads(body_part.decode())
+                        entries = data.get("connections")
+                        if not isinstance(entries, list):
+                            raise ValueError("connections must be a list")
+                        sanitized = []
+                        for entry in entries:
+                            host = entry.get("host")
+                            port = int(entry.get("port", 0))
+                            if not host or port <= 0:
+                                continue
+                            driver = entry.get("driver", "rtl_tcp")
+                            sample_rate = int(entry.get("sample_rate", SAMPLE_RATE))
+                            sanitized.append({
+                                "id": entry.get("id") or uuid.uuid4().hex,
+                                "name": entry.get("name") or f"{host}:{port}",
+                                "host": host,
+                                "port": port,
+                                "driver": driver,
+                                "sample_rate": sample_rate,
+                            })
+                        with self._connections_lock:
+                            self.connections = sanitized
+                        if self._save_connections():
+                            writer.write(b'HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\nContent-Length: 11\r\n\r\n{"ok":true}')
+                        else:
+                            writer.write(b'HTTP/1.1 500 Error\r\nAccess-Control-Allow-Origin: *\r\nContent-Length: 12\r\n\r\n{"ok":false}')
                     except Exception:
                         writer.write(b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n")
                 elif method == "OPTIONS":
@@ -497,7 +729,10 @@ class SDRServer:
 
     async def run(self):
         logger.info(f"evilSDR starting — WS:{WS_PORT} HTTP:{HTTP_PORT}")
-        asyncio.create_task(self.connection_loop())
+        self._loop = asyncio.get_running_loop()
+        asyncio.create_task(self.reader_loop())
+        asyncio.create_task(self.processor_loop())
+        asyncio.create_task(self._connection_manager_loop())
         async with serve(self.ws_handler, WS_HOST, WS_PORT):
             http_server = await asyncio.start_server(self.http_handler, WS_HOST, HTTP_PORT)
             logger.info(f"HTTP serving {FRONTEND_DIR} on :{HTTP_PORT}")

@@ -14,6 +14,7 @@
       <div class="header-actions">
         <button id="btn-connect-modal">⚡</button>
         <button id="btn-bookmarks-toggle">★</button>
+        <button id="btn-settings" title="Settings">☰</button>
       </div>
       <div class="status">
         <span id="status-text">DISCONNECTED</span>
@@ -219,9 +220,15 @@
       </aside>
     </main>
 
-    <div class="modal-overlay" id="connect-modal" style="display:none">
+        <div class="modal-overlay" id="connect-modal" style="display:none">
       <div class="modal">
-        <h3>Connection Settings</h3>
+        <h3>Connection Manager</h3>
+        <div class="conn-status-line" id="conn-status-line">Not connected</div>
+        <div class="connection-list" id="connection-list"></div>
+        <div class="control-row">
+          <label>Name</label>
+          <input type="text" id="conn-name" placeholder="Profile name">
+        </div>
         <div class="control-row">
           <label>Host</label>
           <input type="text" id="conn-host" value="127.0.0.1">
@@ -246,14 +253,67 @@
              <option value="3200000">3.200 MSPS</option>
           </select>
         </div>
+        <div class="control-row">
+          <button id="btn-save-connection" style="flex: 1">Save Profile</button>
+          <button id="btn-delete-connection" style="flex: 1">Delete Profile</button>
+        </div>
         <div class="control-row" style="margin-top: 12px">
-          <button id="btn-do-connect" style="flex: 1">Update</button>
-          <button id="btn-disconnect" style="flex: 1">Stop HW</button>
+          <button id="btn-do-connect" style="flex: 1">Connect</button>
+          <button id="btn-disconnect" style="flex: 1">Disconnect</button>
         </div>
         <button id="btn-close-connect" style="width: 100%">Close</button>
       </div>
     </div>
+<div class="modal-overlay" id="settings-modal" style="display:none">
+    <div class="modal settings-modal">
+      <div class="settings-header">
+        <h3>Settings</h3>
+        <button id="btn-close-settings" class="settings-close">&times;</button>
+      </div>
+      <div class="settings-tabs">
+        <button class="settings-tab active" data-tab="audio">Audio</button>
+        <button class="settings-tab" data-tab="visualization">Visualization</button>
+        <button class="settings-tab" data-tab="frequency">Frequency</button>
+        <button class="settings-tab" data-tab="recording">Recording</button>
+        <button class="settings-tab" data-tab="plugins">Plugins</button>
+        <button class="settings-tab" data-tab="advanced">Advanced</button>
+      </div>
+      <div class="settings-body">
+        <div class="settings-pane active" data-pane="audio">
+          <div class="control-row"><label>Output Device</label><select id="set-audio-output" class="mode-btn" style="flex:1"><option>Default</option></select></div>
+          <div class="control-row"><label>Buffer Size</label><select id="set-audio-buffer" class="mode-btn" style="flex:1"><option value="256">256</option><option value="512">512</option><option value="1024" selected>1024</option><option value="2048">2048</option><option value="4096">4096</option></select></div>
+          <div class="control-row"><label>Noise Reduction</label><input type="checkbox" id="set-noise-reduction"></div>
+          <div class="control-row"><label>NR Level</label><input type="range" id="set-nr-level" min="0" max="100" value="30"><span class="value" id="set-nr-value">30</span></div>
+        </div>
+        <div class="settings-pane" data-pane="visualization">
+          <div class="control-row"><label>FPS Limit</label><select id="set-fps" class="mode-btn" style="flex:1"><option value="30">30</option><option value="60" selected>60</option></select></div>
+          <div class="control-row"><label>FFT Size</label><select id="set-fft" class="mode-btn" style="flex:1"><option value="1024">1024</option><option value="2048" selected>2048</option><option value="4096">4096</option><option value="8192">8192</option></select></div>
+          <div class="control-row"><label>Peak Hold</label><input type="checkbox" id="set-peak-hold"></div>
+          <div class="control-row"><label>Averaging</label><input type="range" id="set-averaging" min="1" max="20" value="4"><span class="value" id="set-avg-value">4</span></div>
+        </div>
+        <div class="settings-pane" data-pane="frequency">
+          <div class="control-row"><label>Correction (ppm)</label><input type="number" id="set-ppm" value="0" step="1"></div>
+          <div class="control-row"><label>Default Step (kHz)</label><input type="number" id="set-step" value="100" step="1"></div>
+          <div class="control-row"><label>Direct Sampling</label><select id="set-direct" class="mode-btn" style="flex:1"><option value="0">Off</option><option value="1">I</option><option value="2">Q</option></select></div>
+        </div>
+        <div class="settings-pane" data-pane="recording">
+          <div class="control-row"><label>Format</label><select id="set-rec-fmt" class="mode-btn" style="flex:1"><option value="wav">WAV</option><option value="raw">Raw IQ</option></select></div>
+          <div class="control-row"><label>Auto-split (min)</label><input type="number" id="set-rec-split" value="0" min="0" step="1"></div>
+          <div class="control-row"><label>Add Timestamp</label><input type="checkbox" id="set-rec-ts" checked></div>
+        </div>
+        <div class="settings-pane" data-pane="plugins">
+          <p style="color:#888;font-size:0.9em;">No plugins loaded. Plugin support coming soon.</p>
+        </div>
+        <div class="settings-pane" data-pane="advanced">
+          <div class="control-row"><label>WebSocket Reconnect</label><input type="checkbox" id="set-ws-reconnect" checked></div>
+          <div class="control-row"><label>Debug Logging</label><input type="checkbox" id="set-debug"></div>
+          <div class="control-row"><label>Theme</label><select id="set-theme" class="mode-btn" style="flex:1"><option value="dark">Dark</option><option value="light">Light</option></select></div>
+          <div class="control-row" style="margin-top:12px"><button id="btn-reset-settings" style="width:100%;background:rgba(255,0,0,0.15);border-color:#f44">Reset All Settings</button></div>
+        </div>
+      </div>
+    </div>
   </div>
+
   <script src="app.js?v=5"></script>
 </body>
 </html>

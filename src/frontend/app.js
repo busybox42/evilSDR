@@ -22,6 +22,19 @@ let vizOffset = 0.0;
 let autoScale = true;
 let manualMinDb = -80;
 let manualMaxDb = -20;
+let connectionProfiles = [];
+let selectedConnectionId = null;
+let connectionListEl = null;
+let connectionStatusLine = null;
+let connectionConnected = false;
+let activeConnectionId = null;
+let activeConnectionName = "";
+
+let connectionHost = null;
+let connectionPort = null;
+let connectionDriver = null;
+let connectionSampleRate = null;
+
 
 const PALETTES = {
   classic: [[0,0,0], [0,255,255], [255,0,255], [255,255,255]], 
@@ -112,6 +125,9 @@ function wireControls() {
     if (label) label.textContent = vizOffset.toFixed(1);
   };
 
+  connectionListEl = document.getElementById('connection-list');
+  connectionStatusLine = document.getElementById('conn-status-line');
+
   document.getElementById('btn-bookmarks-toggle').onclick = () => {
     document.getElementById('bookmarks-panel').classList.toggle('open');
   };
@@ -122,20 +138,16 @@ function wireControls() {
     document.getElementById('bookmark-modal').style.display = 'none';
   };
 
-  document.getElementById('btn-connect-modal').onclick = () => {
-    document.getElementById('connect-modal').style.display = 'flex';
-  };
-  document.getElementById('btn-close-connect').onclick = () => {
-    document.getElementById('connect-modal').style.display = 'none';
-  };
+  document.getElementById('btn-connect-modal').onclick = openConnectionModal;
+  document.getElementById('btn-close-connect').onclick = closeConnectionModal;
+  document.getElementById('btn-save-connection').onclick = saveConnectionProfile;
+  document.getElementById('btn-delete-connection').onclick = deleteConnectionProfile;
   document.getElementById('btn-do-connect').onclick = () => {
-    const host = document.getElementById('conn-host').value;
-    const port = parseInt(document.getElementById('conn-port').value);
-    const driver = document.getElementById('conn-driver').value;
-    const sample_rate = parseInt(document.getElementById('conn-sample-rate').value);
-    sendJSON({ type: 'CONNECT', host, port, driver, sample_rate });
-    document.getElementById('connect-modal').style.display = 'none';
+    connectFromForm();
+    closeConnectionModal();
   };
+  document.getElementById('btn-disconnect').onclick = disconnectHardware;
+  loadConnectionProfiles().catch(err => console.error('Failed to load connections', err));
 
   document.getElementById('btn-scan').onclick = toggleScan;
   document.getElementById('btn-range-scan').onclick = startRangeScan;
@@ -202,12 +214,36 @@ function handleJSON(msg) {
       if (msg.streaming !== undefined) setStreamingUI(msg.streaming);
       if (msg.iq_recording !== undefined) { iqRecording = msg.iq_recording; updateRecordUI(); }
       if (msg.audio_recording !== undefined) { audioRecording = msg.audio_recording; updateRecordUI(); }
+      if (msg.connection_id) {
+        activeConnectionId = msg.connection_id;
+        selectedConnectionId = msg.connection_id;
+      }
+      if (msg.connection_name) activeConnectionName = msg.connection_name;
+      if (msg.connection_driver) connectionDriver = msg.connection_driver;
+      if (msg.connection_sample_rate) connectionSampleRate = msg.connection_sample_rate;
+      if (msg.connection_host) connectionHost = msg.connection_host;
+      if (msg.connection_port) connectionPort = msg.connection_port;
+      if (msg.connected !== undefined) connectionConnected = msg.connected;
+      updateConnectionStatusLine();
       break;
     case 'FREQ_CHANGED': updateFreq(msg.value); break;
     case 'MODE_CHANGED': setModeUI(msg.mode); break;
     case 'CONNECTION_CHANGED':
       if (msg.host) document.getElementById('conn-host').value = msg.host;
       if (msg.port) document.getElementById('conn-port').value = msg.port;
+      if (msg.driver) document.getElementById('conn-driver').value = msg.driver;
+      if (msg.sample_rate) document.getElementById('conn-sample-rate').value = msg.sample_rate;
+      connectionHost = msg.host || connectionHost;
+      connectionPort = msg.port || connectionPort;
+      connectionDriver = msg.driver || connectionDriver;
+      connectionSampleRate = msg.sample_rate || connectionSampleRate;
+      connectionConnected = msg.connected !== undefined ? msg.connected : connectionConnected;
+      if (msg.profile_id) {
+        activeConnectionId = msg.profile_id;
+        selectedConnectionId = msg.profile_id;
+      }
+      if (msg.name) activeConnectionName = msg.name;
+      updateConnectionStatusLine();
       break;
     case 'SIGNAL_LEVEL':
       const pct = Math.max(0, Math.min(100, ((msg.db + 90) / 90) * 100));
@@ -453,7 +489,25 @@ let cachedBookmarks = { categories: [] };
 async function loadBookmarks() {
   try {
     const r = await fetch('/api/bookmarks');
-    cachedBookmarks = await r.json();
+    const data = await r.json();
+    // Normalize flat list format to categories format
+    if (Array.isArray(data)) {
+      const byCategory = {};
+      data.forEach(entry => {
+        const cat = entry.category || 'Other';
+        if (!byCategory[cat]) {
+          byCategory[cat] = { name: cat, stations: [] };
+        }
+        byCategory[cat].stations.push({
+          frequency: entry.frequency,
+          label: entry.name || entry.label || '',
+          mode: entry.mode || 'FM'
+        });
+      });
+      cachedBookmarks = { categories: Object.values(byCategory) };
+    } else {
+      cachedBookmarks = data;
+    }
     renderBookmarks();
   } catch (e) { console.error(e); }
 }
@@ -548,6 +602,247 @@ async function postBookmarks() {
   } catch (e) { console.error('Failed to save bookmarks:', e); }
 }
 
+
+function updateConnectionStatusLine(overrideText) {
+  if (!connectionStatusLine) return;
+  let text = 'Not connected';
+  let color = 'var(--text-secondary)';
+  if (overrideText) {
+    text = overrideText;
+    const lc = overrideText.toLowerCase();
+    color = lc.includes('failed') || lc.includes('error') ? 'var(--accent-red)' :
+            lc.includes('connect') ? 'var(--accent)' : color;
+  } else if (connectionConnected) {
+    const label = activeConnectionName || (connectionHost ? `${connectionHost}:${connectionPort || ''}` : 'hardware');
+    text = `Connected to ${label}`;
+    color = 'var(--accent)';
+  } else if (activeConnectionName || connectionHost) {
+    const label = activeConnectionName || `${connectionHost || ''}:${connectionPort || ''}`;
+    text = `Disconnected from ${label}`;
+  }
+  connectionStatusLine.textContent = text;
+  connectionStatusLine.style.color = color;
+  renderConnectionList();
+}
+
+function renderConnectionList() {
+  if (!connectionListEl) return;
+  connectionListEl.innerHTML = '';
+  if (!connectionProfiles.length) {
+    const empty = document.createElement('div');
+    empty.className = 'connection-item';
+    empty.textContent = 'No saved connections';
+    connectionListEl.appendChild(empty);
+    return;
+  }
+  connectionProfiles.forEach(profile => {
+    const item = document.createElement('div');
+    item.className = 'connection-item';
+    if (profile.id === selectedConnectionId) item.classList.add('selected');
+    if (connectionConnected && profile.id === activeConnectionId) item.classList.add('connected');
+    const name = document.createElement('div');
+    name.className = 'conn-name';
+    name.textContent = profile.name || `${profile.host}:${profile.port}`;
+    const meta = document.createElement('div');
+    meta.className = 'conn-meta';
+    const hostSpan = document.createElement('span');
+    hostSpan.textContent = `${profile.host || ''}:${profile.port || ''}`;
+    const driverSpan = document.createElement('span');
+    driverSpan.textContent = profile.driver || 'rtl_tcp';
+    meta.appendChild(hostSpan);
+    meta.appendChild(driverSpan);
+    item.appendChild(name);
+    item.appendChild(meta);
+    item.onclick = () => selectConnectionProfile(profile.id);
+    connectionListEl.appendChild(item);
+  });
+}
+
+function selectConnectionProfile(id) {
+  const profile = connectionProfiles.find(p => p.id === id);
+  if (!profile) return;
+  selectedConnectionId = profile.id;
+  fillConnectionForm(profile);
+  renderConnectionList();
+}
+
+function fillConnectionForm(profile) {
+  if (!profile) return;
+  document.getElementById('conn-name').value = profile.name || `${profile.host}:${profile.port}`;
+  document.getElementById('conn-host').value = profile.host || '';
+  document.getElementById('conn-port').value = profile.port || '';
+  document.getElementById('conn-driver').value = profile.driver || 'rtl_tcp';
+  document.getElementById('conn-sample-rate').value = profile.sample_rate || 2400000;
+}
+
+function clearConnectionForm() {
+  document.getElementById('conn-name').value = '';
+  document.getElementById('conn-host').value = '';
+  document.getElementById('conn-port').value = '';
+  document.getElementById('conn-driver').value = 'rtl_tcp';
+  document.getElementById('conn-sample-rate').value = 2400000;
+}
+
+function updateConnectionFormFromSelection() {
+  if (!selectedConnectionId) {
+    clearConnectionForm();
+    return;
+  }
+  const profile = connectionProfiles.find(p => p.id === selectedConnectionId);
+  if (profile) {
+    fillConnectionForm(profile);
+  } else {
+    clearConnectionForm();
+  }
+}
+
+async function loadConnectionProfiles() {
+  try {
+    const res = await fetch('/api/connections');
+    if (!res.ok) throw new Error('Failed to load connections');
+    const data = await res.json();
+    connectionProfiles = Array.isArray(data.connections) ? data.connections : [];
+    const serverSelected = data.selected_id;
+    if (serverSelected && connectionProfiles.some(p => p.id === serverSelected)) {
+      selectedConnectionId = serverSelected;
+    } else if (!selectedConnectionId || !connectionProfiles.some(p => p.id === selectedConnectionId)) {
+      selectedConnectionId = connectionProfiles[0]?.id || null;
+    }
+    connectionConnected = Boolean(data.connected);
+    activeConnectionId = data.selected_id || activeConnectionId;
+    activeConnectionName = data.connection_name || activeConnectionName;
+    connectionDriver = data.connection_driver || connectionDriver;
+    connectionSampleRate = data.connection_sample_rate || connectionSampleRate;
+    connectionHost = data.connection_host || connectionHost;
+    connectionPort = data.connection_port || connectionPort;
+    updateConnectionStatusLine();
+    renderConnectionList();
+    updateConnectionFormFromSelection();
+  } catch (err) {
+    console.error('Unable to load connections', err);
+    if (connectionStatusLine) {
+      connectionStatusLine.textContent = 'Failed to load connections';
+      connectionStatusLine.style.color = 'var(--accent-red)';
+    }
+  }
+}
+
+async function persistConnectionProfiles() {
+  try {
+    const res = await fetch('/api/connections', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ connections: connectionProfiles }),
+    });
+    if (!res.ok) throw new Error('Failed to save connections');
+    await loadConnectionProfiles();
+  } catch (err) {
+    console.error('Failed to persist connections', err);
+    if (connectionStatusLine) {
+      connectionStatusLine.textContent = 'Failed to save connections';
+      connectionStatusLine.style.color = 'var(--accent-red)';
+    }
+    throw err;
+  }
+}
+
+async function saveConnectionProfile() {
+  const hostEl = document.getElementById('conn-host');
+  const portEl = document.getElementById('conn-port');
+  if (!hostEl || !portEl) return;
+  const host = hostEl.value.trim();
+  const port = parseInt(portEl.value, 10);
+  if (!host || isNaN(port) || port <= 0) {
+    if (connectionStatusLine) {
+      connectionStatusLine.textContent = 'Enter valid host and port';
+      connectionStatusLine.style.color = 'var(--accent-red)';
+    }
+    return;
+  }
+  const driver = document.getElementById('conn-driver').value;
+  const sampleRate = parseInt(document.getElementById('conn-sample-rate').value, 10) || 2400000;
+  const nameInput = document.getElementById('conn-name').value.trim();
+  const entry = {
+    id: selectedConnectionId || `conn-${Date.now()}`,
+    name: nameInput || `${host}:${port}`,
+    host,
+    port,
+    driver,
+    sample_rate: sampleRate,
+  };
+  const idx = connectionProfiles.findIndex(p => p.id === entry.id);
+  if (idx >= 0) {
+    connectionProfiles[idx] = entry;
+  } else {
+    connectionProfiles.push(entry);
+  }
+  selectedConnectionId = entry.id;
+  try {
+    await persistConnectionProfiles();
+  } catch (err) {
+    // already reported
+  }
+}
+
+async function deleteConnectionProfile() {
+  if (!selectedConnectionId) {
+    if (connectionStatusLine) {
+      connectionStatusLine.textContent = 'Select a profile to delete';
+      connectionStatusLine.style.color = 'var(--accent-red)';
+    }
+    return;
+  }
+  connectionProfiles = connectionProfiles.filter(p => p.id !== selectedConnectionId);
+  selectedConnectionId = null;
+  try {
+    await persistConnectionProfiles();
+  } catch (err) {
+    // already reported
+  }
+}
+
+
+function openConnectionModal() {
+  const modal = document.getElementById('connect-modal');
+  if (modal) modal.style.display = 'flex';
+}
+
+function closeConnectionModal() {
+  const modal = document.getElementById('connect-modal');
+  if (modal) modal.style.display = 'none';
+}
+
+function connectFromForm() {
+  const host = document.getElementById('conn-host').value.trim();
+  const port = parseInt(document.getElementById('conn-port').value, 10);
+  if (!host || isNaN(port) || port <= 0) {
+    if (connectionStatusLine) {
+      connectionStatusLine.textContent = 'Enter valid host and port';
+      connectionStatusLine.style.color = 'var(--accent-red)';
+    }
+    return;
+  }
+  const driver = document.getElementById('conn-driver').value;
+  const sample_rate = parseInt(document.getElementById('conn-sample-rate').value, 10) || 2400000;
+  const name = document.getElementById('conn-name').value.trim() || `${host}:${port}`;
+  const profileId = selectedConnectionId || activeConnectionId || `conn-${Date.now()}`;
+  activeConnectionId = profileId;
+  activeConnectionName = name;
+  connectionHost = host;
+  connectionPort = port;
+  connectionDriver = driver;
+  connectionSampleRate = sample_rate;
+  connectionConnected = false;
+  updateConnectionStatusLine(`Connecting to ${name}...`);
+  sendJSON({ type: 'CONNECT', host, port, driver, sample_rate, name, profile_id: profileId });
+}
+
+function disconnectHardware() {
+  sendJSON({ type: 'DISCONNECT' });
+  connectionConnected = false;
+  updateConnectionStatusLine('Disconnecting...');
+}
+
 let isScanning = false;
 function toggleScan() {
   if (isScanning) {
@@ -621,3 +916,30 @@ function appendDecoderLog(msg) {
   log.appendChild(line);
   log.scrollTop = log.scrollHeight;
 }
+
+/* ── Settings Modal ── */
+function wireSettings() {
+  const btn = document.getElementById('btn-settings');
+  const modal = document.getElementById('settings-modal');
+  const closeBtn = document.getElementById('btn-close-settings');
+  if (!btn || !modal) return;
+
+  btn.addEventListener('click', () => { modal.style.display = 'flex'; });
+  closeBtn.addEventListener('click', () => { modal.style.display = 'none'; });
+  modal.addEventListener('click', (e) => { if (e.target === modal) modal.style.display = 'none'; });
+
+  // Tab switching
+  modal.querySelectorAll('.settings-tab').forEach(tab => {
+    tab.addEventListener('click', () => {
+      modal.querySelectorAll('.settings-tab').forEach(t => t.classList.remove('active'));
+      modal.querySelectorAll('.settings-pane').forEach(p => p.classList.remove('active'));
+      tab.classList.add('active');
+      modal.querySelector(`.settings-pane[data-pane="${tab.dataset.tab}"]`).classList.add('active');
+    });
+  });
+
+  // Reset button
+  const resetBtn = document.getElementById('btn-reset-settings');
+  if (resetBtn) resetBtn.addEventListener('click', () => { if (confirm('Reset all settings to defaults?')) location.reload(); });
+}
+wireSettings();
