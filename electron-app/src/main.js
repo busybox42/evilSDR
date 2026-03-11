@@ -10,6 +10,8 @@ const BACKEND_DIR = app.isPackaged
   ? path.join(process.resourcesPath, 'evilSDR')
   : path.join(__dirname, '..', '..');
 const BACKEND_ENTRY = path.join(BACKEND_DIR, 'src', 'backend', 'server.py');
+const DEV_VENV_PYTHON = path.join(BACKEND_DIR, '.venv', 'bin', 'python');
+const BUNDLED_VENV_PYTHON = path.join(BACKEND_DIR, 'src', 'backend', 'venv', 'bin', 'python');
 const DATA_ROOT = path.join(app.getPath('userData'), 'evilSDR');
 
 let mainWindow = null;
@@ -78,9 +80,16 @@ function createWindow() {
   });
 }
 
+function resolvePython() {
+  if (process.env.PYTHON) return process.env.PYTHON;
+  if (!app.isPackaged && fs.existsSync(DEV_VENV_PYTHON)) return DEV_VENV_PYTHON;
+  if (app.isPackaged && fs.existsSync(BUNDLED_VENV_PYTHON)) return BUNDLED_VENV_PYTHON;
+  return 'python3';
+}
+
 function startBackend() {
   ensureDataFiles();
-  const python = process.env.PYTHON || 'python3';
+  const python = resolvePython();
   backendProcess = spawn(python, [BACKEND_ENTRY], {
     env: {
       ...process.env,
