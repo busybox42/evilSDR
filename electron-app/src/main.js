@@ -1,4 +1,4 @@
-const { app, BrowserWindow, dialog } = require('electron');
+const { app, BrowserWindow, dialog, ipcMain } = require('electron');
 const { spawn } = require('child_process');
 const path = require('path');
 const fs = require('fs');
@@ -62,9 +62,11 @@ function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1400,
     height: 900,
+    frame: false,
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
+      preload: path.join(__dirname, 'preload.js'),
     },
     title: 'evilSDR',
     autoHideMenuBar: true,
@@ -118,8 +120,24 @@ function startBackend() {
 }
 
 app.whenReady().then(() => {
+  ipcMain.on('window:minimize', () => {
+    if (mainWindow) mainWindow.minimize();
+  });
+  ipcMain.on('window:maximize-toggle', () => {
+    if (!mainWindow) return;
+    if (mainWindow.isMaximized()) mainWindow.unmaximize();
+    else mainWindow.maximize();
+  });
+  ipcMain.on('window:close', () => {
+    if (mainWindow) mainWindow.close();
+  });
+
   startBackend()
-    .then(() => createWindow())
+    .then(() => {
+      createWindow();
+      mainWindow.on('maximize', () => mainWindow.webContents.send('window:maximized'));
+      mainWindow.on('unmaximize', () => mainWindow.webContents.send('window:unmaximized'));
+    })
     .catch(err => {
       dialog.showErrorBox('evilSDR', `Failed to start backend: ${err.message}`);
       app.quit();

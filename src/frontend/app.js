@@ -149,6 +149,17 @@ function wireControls() {
   document.getElementById('btn-disconnect').onclick = disconnectHardware;
   loadConnectionProfiles().catch(err => console.error('Failed to load connections', err));
 
+  const minBtn = document.getElementById('win-min');
+  const maxBtn = document.getElementById('win-max');
+  const closeBtn = document.getElementById('win-close');
+  if (window.electronWindow && minBtn && maxBtn && closeBtn) {
+    minBtn.onclick = () => window.electronWindow.minimize();
+    maxBtn.onclick = () => window.electronWindow.maximizeToggle();
+    closeBtn.onclick = () => window.electronWindow.close();
+    window.electronWindow.onMaximized(() => { maxBtn.textContent = '❐'; });
+    window.electronWindow.onUnmaximized(() => { maxBtn.textContent = '□'; });
+  }
+
   document.getElementById('btn-scan').onclick = toggleScan;
   document.getElementById('btn-range-scan').onclick = startRangeScan;
   document.getElementById('btn-skip').onclick = () => sendJSON({ type: 'SKIP_SCAN' });

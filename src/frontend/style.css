@@ -42,6 +42,7 @@ body {
   border-bottom: 1px solid var(--border);
   gap: 16px;
   z-index: 10;
+  -webkit-app-region: drag;
 }
 .header .logo { font-size: 18px; color: var(--accent); text-shadow: var(--glow); font-weight: 700; letter-spacing: 1px; }
 .header .freq-display {
@@ -58,7 +59,7 @@ body {
   text-shadow: 0 0 8px rgba(0, 204, 255, 0.4);
   letter-spacing: 2px;
 }
-.header-actions { display: flex; gap: 6px; }
+.header-actions { display: flex; gap: 6px; -webkit-app-region: no-drag; }
 .header-actions button {
   background: var(--bg-input); border: 1px solid var(--border); color: var(--text-secondary);
   width: 34px; height: 34px; cursor: pointer; font-size: 16px; border-radius: 4px;
@@ -66,7 +67,20 @@ body {
 }
 .header-actions button:hover { border-color: var(--accent); color: var(--accent); }
 
-.status { display: flex; align-items: center; gap: 8px; font-size: 11px; white-space: nowrap; }
+.window-controls { display: flex; gap: 4px; -webkit-app-region: no-drag; }
+.window-controls button {
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  width: 28px;
+  height: 28px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.window-controls button:hover { border-color: var(--accent-cyan); color: var(--accent-cyan); }
+#win-close:hover { border-color: var(--accent-red); color: var(--accent-red); }
+
+.status { display: flex; align-items: center; gap: 8px; font-size: 11px; white-space: nowrap; -webkit-app-region: no-drag; }
 .status-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent-red); transition: background 0.3s; }
 
 /* ── Main 3-column layout ───────────────────────────────────────── */
